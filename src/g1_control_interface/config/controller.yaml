@@ -1,0 +1,18 @@
+g1_controller_node:
+  ros__parameters:
+    arm_model: G1ARM5
+    arm_control_period_sec: 0.02
+    arm_servo_max_delta_per_command_rad: 0.05
+    arm_servo_max_abs_step_per_command_rad: 0.05
+    arm_max_position_step_rad: 0.01
+    arm_lowstate_fresh_timeout_sec: 0.10
+    arm_release_duration_sec: 2.0
+    arm_default_kp: 60.0
+    arm_default_kd: 1.5
+    arm_waist_kp_scale: 4.0
+    arm_waist_kd_scale: 4.0
+    loco_command_timeout_sec: 0.30
+    loco_keepalive_period_sec: 0.05
+    loco_max_vx: 0.50
+    loco_max_vy: 0.30
+    loco_max_omega: 0.80

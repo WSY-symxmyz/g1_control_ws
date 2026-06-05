@@ -1,0 +1,10 @@
+string[] joint_names
+float64[] positions
+float64[] velocities
+float64[] kp
+float64[] kd
+float64 duration_sec
+bool hold
+---
+bool success
+string message

@@ -1,0 +1,8 @@
+bool enable
+bool continuous
+int32 requested_fsm_id
+---
+bool success
+string message
+int32 fsm_id
+int32 fsm_mode
