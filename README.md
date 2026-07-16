@@ -81,8 +81,10 @@ This workspace intentionally separates arm and locomotion control:
   - supports the locomotion mode based on `fsm_id = 500`
   - exposes velocity commands rather than low-level leg joint control
   - includes keepalive and timeout stop behavior
-  - does not poll FSM status automatically; status messages report the latest
-    cached FSM value from explicit locomotion operations
+  - creates one persistent response subscription and matches replies by Unitree
+    request identity, avoiding per-command DDS endpoint creation
+  - checks FSM once after startup, requests `fsm_id=500` only when needed, and
+    verifies the result before accepting velocity commands
 
 This split is important for long-term reliability. In normal usage, the arm
 should be controlled through `/arm_sdk`, while walking and turning should be
@@ -267,10 +269,16 @@ executed after the controller's commanded position reaches the current target.
 ### `SetLocoMode`
 
 Used to enable or disable locomotion mode. The current unified interface only
-supports `fsm_id = 500` for locomotion. Enabling locomotion explicitly requests
-`fsm_id=500` and updates the cached FSM status if the request succeeds. The
-controller does not continuously query FSM state, because FSM queries are not
-part of the real-time arm control path.
+supports `fsm_id = 500` for locomotion. The controller automatically queries the
+FSM once after startup. If the robot is already in FSM 500, it becomes ready
+without sending a mode command. Otherwise it requests FSM 500 and verifies the
+result. Enabling through this service re-runs that initialization only when FSM
+500 is not currently confirmed.
+
+Disabling sends zero velocity and stops accepting motion commands. `StopLoco`
+only stops the current motion, so later commands can resume. Neither operation
+switches the robot out of FSM 500, and velocity commands never set the FSM
+themselves.
 
 ## Parameters
 
@@ -296,6 +304,10 @@ Notable parameters:
 - `arm_waist_kd_scale`
 - `loco_command_timeout_sec`
 - `loco_keepalive_period_sec`
+- `loco_fsm_startup_delay_sec`
+- `loco_api_response_timeout_sec`
+- `loco_velocity_duration_sec`
+- `loco_api_failure_limit`
 - `loco_max_vx`
 - `loco_max_vy`
 - `loco_max_omega`
@@ -340,9 +352,16 @@ Look for:
 
 - `lowstate_online: true`
 
-`fsm_id` and `fsm_mode` are cached values. At startup they may remain `-1`
-until a locomotion mode operation updates them. This is intentional: the node
-does not block startup or arm control on FSM queries.
+The locomotion FSM check starts asynchronously after
+`loco_fsm_startup_delay_sec`, so it does not block node construction or the arm
+control thread. Before sending locomotion commands, wait for:
+
+- `fsm_id: 500`
+- `message: locomotion ready; FSM already 500`, or
+  `message: locomotion ready; FSM set and verified as 500`
+
+If the query, mode change, or verification fails, `fsm_id` remains `-1` and
+velocity commands are rejected.
 
 If `lowstate_online` is false, do not proceed with arm commands.
 
@@ -400,7 +419,14 @@ lowered to zero, then stops publishing arm commands.
 
 ### 3. Test locomotion control
 
-Enable locomotion mode:
+First verify that startup FSM initialization completed:
+
+```bash
+ros2 topic echo /g1/state/controller_status
+```
+
+Wait for `fsm_id: 500`. The service below is only needed to re-enable the
+command interface or retry FSM initialization after an error:
 
 ```bash
 ros2 service call /g1/loco/set_mode g1_control_msgs/srv/SetLocoMode "{enable: true, continuous: true, requested_fsm_id: 500}"
@@ -423,6 +449,27 @@ Stop locomotion:
 ```bash
 ros2 service call /g1/loco/stop g1_control_msgs/srv/StopLoco "{}"
 ```
+
+The interface follows the official non-continuous `Move()` behavior by sending
+`7105 SetVelocity` with a default one-second validity horizon while refreshing
+it every `loco_keepalive_period_sec`. If the ROS command stream becomes stale,
+the independent `loco_command_timeout_sec` watchdog immediately sends zero
+velocity. A stop does not resend `7101` and does not invalidate the confirmed
+FSM 500 state.
+
+For API-level verification, observe the shared Unitree request topic:
+
+```bash
+timeout 10s ros2 topic echo /api/sport/request
+```
+
+Requests from this interface use nanosecond-scale identity values. With the
+robot already in FSM 500, startup should produce one `7001` query and no `7101`
+mode change. A sustained velocity command should then produce uninterrupted
+`7105` requests at approximately `1 / loco_keepalive_period_sec`, with
+`duration` equal to `loco_velocity_duration_sec`. There should be no five-second
+gap. Other bare DDS applications may publish their own requests on this shared
+topic, so identify this interface by its identity range and payload.
 
 ## Debugging Arm Streaming
 

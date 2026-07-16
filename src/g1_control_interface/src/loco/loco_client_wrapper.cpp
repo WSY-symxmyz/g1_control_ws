@@ -61,6 +61,62 @@ int32_t LocoClientWrapper::set_velocity(double vx, double vy, double omega,
   return base_client_.Call(request);
 }
 
-int32_t LocoClientWrapper::stop_move() { return set_velocity(0.0, 0.0, 0.0, 1.0); }
+int32_t LocoClientWrapper::stop_move() {
+  return set_velocity(0.0, 0.0, 0.0, 1.0);
+}
+
+void LocoClientWrapper::get_fsm_id_async(FsmIdCallback callback,
+                                         std::chrono::milliseconds timeout) {
+  unitree_api::msg::Request request;
+  request.header.identity.api_id = kRobotApiIdLocoGetFsmId;
+  base_client_.CallAsync(
+      std::move(request),
+      [callback = std::move(callback)](int32_t ret,
+                                       const nlohmann::json& json) {
+        int fsm_id = -1;
+        if (ret == 0) {
+          try {
+            json.at("data").get_to(fsm_id);
+          } catch (const nlohmann::detail::exception&) {
+            ret = -2;
+          }
+        }
+        callback(ret, fsm_id);
+      },
+      timeout);
+}
+
+void LocoClientWrapper::set_fsm_id_async(int fsm_id, StatusCallback callback,
+                                         std::chrono::milliseconds timeout) {
+  unitree_api::msg::Request request;
+  request.header.identity.api_id = kRobotApiIdLocoSetFsmId;
+  nlohmann::json json;
+  json["data"] = fsm_id;
+  request.parameter = json.dump();
+  base_client_.CallAsync(
+      std::move(request),
+      [callback = std::move(callback)](int32_t ret, const nlohmann::json&) {
+        callback(ret);
+      },
+      timeout);
+}
+
+void LocoClientWrapper::set_velocity_async(double vx, double vy, double omega,
+                                           double duration_sec,
+                                           StatusCallback callback,
+                                           std::chrono::milliseconds timeout) {
+  unitree_api::msg::Request request;
+  request.header.identity.api_id = kRobotApiIdLocoSetVelocity;
+  nlohmann::json json;
+  json["velocity"] = {vx, vy, omega};
+  json["duration"] = duration_sec;
+  request.parameter = json.dump();
+  base_client_.CallAsync(
+      std::move(request),
+      [callback = std::move(callback)](int32_t ret, const nlohmann::json&) {
+        callback(ret);
+      },
+      timeout);
+}
 
 }  // namespace g1_control_interface

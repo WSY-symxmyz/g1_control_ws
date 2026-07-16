@@ -13,6 +13,10 @@ g1_controller_node:
     arm_waist_kd_scale: 4.0
     loco_command_timeout_sec: 0.30
     loco_keepalive_period_sec: 0.05
+    loco_fsm_startup_delay_sec: 0.50
+    loco_api_response_timeout_sec: 0.25
+    loco_velocity_duration_sec: 1.00
+    loco_api_failure_limit: 3
     loco_max_vx: 0.50
     loco_max_vy: 0.30
     loco_max_omega: 0.80

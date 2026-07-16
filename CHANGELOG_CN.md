@@ -2,6 +2,43 @@
 
 本文件用于记录 `g1_control_ws` 中控制接口、消息、参数和安全逻辑的主要变更。之后每次修改接口或控制逻辑时，都应在这里追加记录，方便长期维护和实机测试追踪。
 
+## 2026-07-17
+
+### 修复 locomotion 高频 API 请求的 5 秒阻塞
+
+- 根据实机 `/api/sport/request` 和 `/api/sport/response` 日志，确认旧实现
+  每次调用 Unitree API 都临时创建 response subscription。高频发送 `7105`
+  时偶发错过 response，随后同步等待固定 `5 s`，导致机器人只执行一小段
+  `0.15 s` 速度后长时间停顿。
+- 将 `BaseApiClient` 改为持久订阅 `/api/sport/response`：
+  - request publisher 和 response subscriber 都在 client 构造时创建。
+  - 使用 Unitree `identity.id` 在 pending request 表中匹配响应。
+  - 增加异步调用和请求超时清理，不再以 20 Hz 创建/销毁 DDS endpoint。
+  - 超时日志打印 `api_id` 和 `identity.id`，方便定位 `7001`、`7101`、
+    `7105` 的具体故障。
+- `7105 SetVelocity` 改为异步响应处理，不再阻塞 ROS command subscription
+  或 keepalive timer；连续多次响应失败后关闭 locomotion gate 并发送零速度。
+
+### 调整 FSM 500 初始化与停止语义
+
+- 节点启动后异步执行一次 `7001 GetFsmId`：
+  - 已处于 FSM 500 时直接进入 ready，不发送 `7101`。
+  - 不为 500 时调用官方 `Start` 对应的 `7101 SetFsmId(500)`，然后再次
+    查询并验证结果。
+  - 初始化完成前拒绝速度命令，避免执行启动期间缓存的过期非零速度。
+- 速度命令不再隐式设置 FSM；正常运行阶段只发送 `7105`。
+- 分离“FSM 已确认”和“当前运动命令 active”状态。`StopMove` 只发送零速度、
+  清除当前运动命令，不再把 FSM 500 标记为失效，因此下一次移动不会重复
+  发送 `7101`。
+- 参考 Unitree 官方 `Move(..., continuous=false)`，新增默认 `1.0 s` 的速度
+  有效期，同时保留 `0.30 s` ROS 输入 watchdog 和显式零速度停止。
+- 新增参数：
+  - `loco_fsm_startup_delay_sec`
+  - `loco_api_response_timeout_sec`
+  - `loco_velocity_duration_sec`
+  - `loco_api_failure_limit`
+- 更新 `README.md` 中 FSM 初始化、状态检查、StopMove 和实机调试说明。
+
 ## 2026-06-04
 
 ### 新增键盘 delta 遥操作 demo
