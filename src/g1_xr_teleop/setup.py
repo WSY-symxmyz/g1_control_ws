@@ -21,16 +21,17 @@ setup(
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "numpy", "scipy", "pin>=3.3,<4"],
+    extras_require={"test": ["pytest"]},
     zip_safe=False,
     maintainer="asanolab",
     maintainer_email="todo@example.com",
     description="ROS 2 XR teleoperation bridge for the Unitree G1 control interface.",
     license="Apache-2.0",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "xr_teleop_node = g1_xr_teleop.xr_teleop_node:main",
+            "ik_offline_check = g1_xr_teleop.ik_offline_check:main",
         ],
     },
 )

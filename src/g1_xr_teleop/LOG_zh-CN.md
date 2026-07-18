@@ -47,3 +47,30 @@
 - 新增参数 `xr_stuck_timeout_sec`，默认 `1.0` 秒；当 XR 数据疑似卡住或恢复时分别打印 warning/info，提示操作者调整或重新佩戴头显。
 - 在 dry-run/debug 日志中新增 `loco_cmd=[vx=...,vy=...,omega=...]` 摘要，便于验证 Quest 摇杆到 locomotion 命令的方向和比例。
 - 当前 locomotion 映射保持与 Unitree 官方 `xr_teleoperate` 一致：`vx=-left_stick_y`、`vy=-left_stick_x`、`omega=-right_stick_x`，再分别乘以配置中的最大速度限制。
+
+## 2026-07-19
+
+- 新增 `native_optimization_ik.py`，使用普通 Pinocchio 数值运动学和 SciPy 有边界 trust-region least-squares 实现双臂优化 IK，不再要求 `pinocchio.casadi`。
+- G1ARM5 保留 Unitree 官方 G1 23 自由度 IK 的模型缩减、左右末端 `0.20 m` 偏置、位置/旋转/正则/平滑目标权重 `50.0/0.5/0.02/0.1`、关节限位、warm start 和加权移动滤波。
+- 同时支持 G1ARM7；使用官方对应的 29 自由度 URDF、锁定腿/腰/手指、左右末端 `0.05 m` 偏置和旋转权重 `1.0`。
+- 新增目标位姿有限值与旋转矩阵检查、SO(3) 投影、单周期关节变化限制、求解质量阈值和失败回退；不合格解保持当前实测关节角。
+- `ArmIKAdapter` 新增 `native_optimization` 和 `unitree_casadi` 后端选择；默认使用 `native_optimization`，官方 vendored CasADi 实现继续作为兼容参考保留。
+- 新增 IK ROS 参数，包括最大函数评估次数、收敛容差、输出步长、误差阈值和滤波权重；debug 日志新增求解耗时、误差、接受状态、评估次数和实际 `arm_target`。
+- 新增 `ik_offline_check` 离线检查入口，以及关节顺序、可达目标收敛、输出限速和非法目标回退自动测试。
+- 修复 venv 中 NumPy `2.2.6` 与系统 SciPy `1.8.0` 不兼容的问题，在 venv 安装 SciPy `1.15.3`。
+- 确认普通 `colcon build` 生成的 ROS console script 固定使用 `/usr/bin/python3`，无法读取仅安装在 venv 中的 Pinocchio；改用激活 venv 后执行 `python3 /usr/bin/colcon build`，安装入口的 shebang 正确指向 venv Python。
+- G1ARM5 200 帧连续轨迹离线基准：`200/200` 接受，平均约 `1.49 ms`，P95 约 `1.56 ms`，最大约 `3.05 ms`，最大位置误差约 `1.9 mm`，低于 30 Hz 的 `33.3 ms` 周期。
+- G1ARM5 200 次大幅随机/部分不可达目标压力测试：P95 约 `8.1 ms`，最大约 `13.8 ms`；超过误差阈值的解被拒绝并回退。
+- G1ARM7 100 帧连续轨迹离线检查同样 `100/100` 接受，P95 约 `1.83 ms`，确认通用优化框架可正确构建 14 关节双臂模型。
+- 新增 `pytest.ini`，将测试收集限制在 `test/`，避免 ROS `launch_testing` 插件在 IK 测试期间导入 vendored XR 后端；包级测试最终为 `4 tests, 0 errors, 0 failures`。
+- launch 新增 `enable_arm` 和 `enable_loco` 参数，允许 IK 调试阶段明确关闭 locomotion，避免首次真实双臂测试与行走命令混合。
+- 修复 venv 中 Vuer 0.0.60 与 params-proto 3.3.0 的运行时不兼容：固定 `params-proto==2.13.2` 后，`from vuer import Vuer` 验证通过；README 已记录该版本约束。
+- 将原标定占位实现替换为双模式手臂追踪状态机。`relative_clutch` 在 deadman 每次按下时捕获 XR 双腕和机器人双腕锚点，按相对平移与旋转增量生成目标；松开、XR 未就绪或活动事件流超时后清除锚点，并在恢复后重新捕获。
+- 新增 `unitree_absolute` 模式，直接将 TeleVuer 已转换到机器人腰部坐标约定的双腕 SE(3) 位姿输入 IK，保持 Unitree 官方 teleop 的绝对映射逻辑；本 ROS 接口额外保留 deadman 安全门。
+- 新增 `arm_tracking_mode` launch/YAML 参数，默认设为更适合初期真机测试的 `relative_clutch`；新增 `arm_position_scale`、`arm_rotation_scale` 相对模式缩放参数。
+- `ArmIKAdapter` 新增正运动学与求解状态重置接口，供相对离合捕获当前机器人末端锚点并清空旧滤波历史。
+- 将 IK 单关节独立裁剪改为 Unitree 官方形式的整条关节增量向量等比例缩放，保留候选解的运动方向。
+- 扩展 IK 诊断，分别记录优化器原始候选解误差、实际限速/滤波输出误差，以及限速前后的最大关节变化，便于区分求解质量和输出追踪过程。
+- 对数值变化的 `arm target jump` 安全原因进行类别归一，避免同类跳变数值每帧变化时重复刷屏；首次出现和状态变化仍会记录。
+- 新增标定状态机与统一向量限速测试，源码环境测试结果为 `10 passed`。
+- 相对离合捕获锚点的首个控制周期直接保持当前实测关节角，不运行带正则项的 IK，从控制输出层保证捕获瞬间不产生姿态跳变。

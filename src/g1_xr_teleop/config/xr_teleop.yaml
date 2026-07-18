@@ -8,6 +8,21 @@ g1_xr_teleop_node:
     img_server_ip: 192.168.123.164
     enable_xr: false
     enable_ik: false
+    ik_backend: native_optimization
+    ik_position_weight: 50.0
+    ik_regularization_weight: 0.02
+    ik_smooth_weight: 0.1
+    ik_max_nfev: 30
+    ik_ftol: 0.0001
+    ik_xtol: 0.0001
+    ik_gtol: 0.0001
+    ik_max_output_step_rad: 0.1
+    ik_max_position_error_m: 0.30
+    ik_max_rotation_error_rad: 2.0
+    ik_filter_weights: [0.4, 0.3, 0.2, 0.1]
+    arm_tracking_mode: relative_clutch
+    arm_position_scale: 1.0
+    arm_rotation_scale: 1.0
     enable_arm: true
     enable_loco: true
     require_deadman: true

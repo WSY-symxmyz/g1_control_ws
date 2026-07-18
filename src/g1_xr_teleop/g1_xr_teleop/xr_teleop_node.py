@@ -57,7 +57,7 @@ class G1XRTeleopNode(Node):
 
         self.arm_state = ArmState()
         self.status = ControllerStatus()
-        self.last_safety_reasons = []
+        self.last_safety_reason_keys = []
         self.last_loco_allowed = False
         self.debug_tick_count = 0
         self.xr_stuck_timeout_sec = float(self.get_parameter("xr_stuck_timeout_sec").value)
@@ -96,7 +96,11 @@ class G1XRTeleopNode(Node):
             "controller_value_change_age_sec": None,
         }
 
-        self.calibration = CalibrationState()
+        self.calibration = CalibrationState(
+            self.get_parameter("arm_tracking_mode").value,
+            self.get_parameter("arm_position_scale").value,
+            self.get_parameter("arm_rotation_scale").value,
+        )
         self.arm_mapper = ArmCommandMapper(
             self.arm_joint_names,
             self.get_parameter("arm_command_duration_sec").value,
@@ -124,7 +128,8 @@ class G1XRTeleopNode(Node):
         self.get_logger().info(
             "g1_xr_teleop started "
             f"(dry_run={self.dry_run}, enable_xr={self.get_parameter('enable_xr').value}, "
-            f"enable_ik={self.get_parameter('enable_ik').value}, arm_model={self.arm_model})"
+            f"enable_ik={self.get_parameter('enable_ik').value}, arm_model={self.arm_model}, "
+            f"arm_tracking_mode={self.calibration.mode})"
         )
 
     def destroy_node(self):
@@ -143,6 +148,21 @@ class G1XRTeleopNode(Node):
         self.declare_parameter("img_server_ip", "192.168.123.164")
         self.declare_parameter("enable_xr", False)
         self.declare_parameter("enable_ik", False)
+        self.declare_parameter("ik_backend", "native_optimization")
+        self.declare_parameter("ik_position_weight", 50.0)
+        self.declare_parameter("ik_regularization_weight", 0.02)
+        self.declare_parameter("ik_smooth_weight", 0.1)
+        self.declare_parameter("ik_max_nfev", 30)
+        self.declare_parameter("ik_ftol", 1e-4)
+        self.declare_parameter("ik_xtol", 1e-4)
+        self.declare_parameter("ik_gtol", 1e-4)
+        self.declare_parameter("ik_max_output_step_rad", 0.10)
+        self.declare_parameter("ik_max_position_error_m", 0.30)
+        self.declare_parameter("ik_max_rotation_error_rad", 2.0)
+        self.declare_parameter("ik_filter_weights", [0.4, 0.3, 0.2, 0.1])
+        self.declare_parameter("arm_tracking_mode", "relative_clutch")
+        self.declare_parameter("arm_position_scale", 1.0)
+        self.declare_parameter("arm_rotation_scale", 1.0)
         self.declare_parameter("enable_arm", True)
         self.declare_parameter("enable_loco", True)
         self.declare_parameter("require_deadman", True)
@@ -207,6 +227,28 @@ class G1XRTeleopNode(Node):
             self.get_parameter("enable_ik").value,
             self.arm_model,
             self.get_logger(),
+            self.get_parameter("ik_backend").value,
+            {
+                "position_weight": self.get_parameter("ik_position_weight").value,
+                "regularization_weight": self.get_parameter(
+                    "ik_regularization_weight"
+                ).value,
+                "smooth_weight": self.get_parameter("ik_smooth_weight").value,
+                "max_nfev": self.get_parameter("ik_max_nfev").value,
+                "ftol": self.get_parameter("ik_ftol").value,
+                "xtol": self.get_parameter("ik_xtol").value,
+                "gtol": self.get_parameter("ik_gtol").value,
+                "max_output_step_rad": self.get_parameter(
+                    "ik_max_output_step_rad"
+                ).value,
+                "max_acceptable_position_error_m": self.get_parameter(
+                    "ik_max_position_error_m"
+                ).value,
+                "max_acceptable_rotation_error_rad": self.get_parameter(
+                    "ik_max_rotation_error_rad"
+                ).value,
+                "filter_weights": self.get_parameter("ik_filter_weights").value,
+            },
         )
 
     def _arm_joint_names(self):
@@ -250,14 +292,34 @@ class G1XRTeleopNode(Node):
         current_velocities = self._current_velocities_for_ik()
 
         if self.enable_arm and self.get_parameter("enable_ik").value:
-            left_wrist = self.calibration.apply_wrist_pose(frame.left_wrist_pose)
-            right_wrist = self.calibration.apply_wrist_pose(frame.right_wrist_pose)
-            target_positions = self.arm_ik.solve(
-                left_wrist,
-                right_wrist,
-                current_positions,
-                current_velocities,
+            left_robot_pose = None
+            right_robot_pose = None
+            if self.calibration.mode == "relative_clutch":
+                left_robot_pose, right_robot_pose = self.arm_ik.forward_kinematics(
+                    current_positions
+                )
+            left_wrist, right_wrist, captured = self.calibration.update(
+                frame.left_wrist_pose,
+                frame.right_wrist_pose,
+                left_robot_pose,
+                right_robot_pose,
+                engaged=self.safety_gate.deadman_pressed(frame.controller),
+                motion_ready=frame.motion_ready,
+                stream_healthy=self._arm_xr_stream_healthy(xr_health),
             )
+            if captured:
+                self.arm_ik.reset(current_positions)
+                self.get_logger().info(
+                    "Relative arm clutch engaged; XR and robot wrist anchors captured"
+                )
+                target_positions = list(current_positions)
+            elif left_wrist is not None and right_wrist is not None:
+                target_positions = self.arm_ik.solve(
+                    left_wrist,
+                    right_wrist,
+                    current_positions,
+                    current_velocities,
+                )
 
         safe, reasons = self.safety_gate.evaluate(
             self.status,
@@ -331,12 +393,26 @@ class G1XRTeleopNode(Node):
         self.last_loco_allowed = False
 
     def _log_safety_changes(self, safe, reasons):
-        if reasons != self.last_safety_reasons:
+        reason_keys = [self._safety_reason_key(reason) for reason in reasons]
+        if reason_keys != self.last_safety_reason_keys:
             if safe:
                 self.get_logger().info("Safety gate open")
             else:
                 self.get_logger().warn("Safety gate closed: " + "; ".join(reasons))
-            self.last_safety_reasons = list(reasons)
+            self.last_safety_reason_keys = reason_keys
+
+    @staticmethod
+    def _safety_reason_key(reason):
+        if reason.startswith("arm target jump "):
+            return "arm target jump"
+        return reason
+
+    def _arm_xr_stream_healthy(self, xr_health):
+        if not self.get_parameter("enable_xr").value:
+            return True
+        if self.get_parameter("input_mode").value == "hand":
+            return not bool(xr_health.get("hand_stale", False))
+        return not bool(xr_health.get("controller_stale", False))
 
     def _debug_tick(
         self,
@@ -355,12 +431,20 @@ class G1XRTeleopNode(Node):
         head_pose = self._pose_summary(frame.head_pose)
         left_wrist_pose = self._pose_summary(frame.left_wrist_pose)
         right_wrist_pose = self._pose_summary(frame.right_wrist_pose)
+        arm_target = (
+            "none"
+            if target_positions is None
+            else [round(float(value), 3) for value in target_positions]
+        )
         self.get_logger().info(
             "debug "
             f"ready={frame.motion_ready} safe={safe} "
             f"lowstate={self.status.lowstate_online} "
             f"arm_state={self.arm_state.has_state} "
             f"target={'yes' if target_positions is not None else 'no'} "
+            f"arm_target={arm_target} "
+            f"tracking={self.calibration.snapshot()} "
+            f"ik={self.arm_ik.diagnostic_snapshot()} "
             f"left_trigger={frame.controller.left_trigger:.3f} "
             f"right_trigger={frame.controller.right_trigger:.3f} "
             f"left_squeeze={frame.controller.left_squeeze:.3f} "

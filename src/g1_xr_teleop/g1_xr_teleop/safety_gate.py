@@ -41,6 +41,13 @@ class SafetyGate:
 
         return len(reasons) == 0, reasons
 
+    def deadman_pressed(self, controller):
+        if not self.require_deadman:
+            return True
+        if controller is None:
+            return False
+        return self._deadman_pressed(controller)
+
     def _deadman_pressed(self, controller):
         if self.deadman_source == "right_trigger":
             return self._trigger_pressed(controller.right_trigger)
